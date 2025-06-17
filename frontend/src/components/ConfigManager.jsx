@@ -13,10 +13,47 @@ function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated })
   const [deleteModal, setDeleteModal] = useState({ show: false, configId: null, configName: '' })
   const [showCredentials, setShowCredentials] = useState({}) // Track which configs show credentials
   const [copySuccess, setCopySuccess] = useState({}) // Track copy success messages
+  const [importExportFormat, setImportExportFormat] = useState('csv')
 
   useEffect(() => {
     loadConfigs()
   }, [])
+
+  // Bulk Export Configs
+  const handleExportConfigs = async (format = 'csv') => {
+    setError('');
+    try {
+      // You may need to get token from context if required by s3API
+      const token = localStorage.getItem('token');
+      const response = await s3API.exportConfigs(token, format);
+      const blob = new Blob([response.data], { type: format === 'json' ? 'application/json' : 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `configs.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (err) {
+      setError('Failed to export configs: ' + (err.response?.data?.error || err.message));
+    }
+  };
+
+  // Bulk Import Configs
+  const handleImportConfigs = async (e) => {
+    setError('');
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const token = localStorage.getItem('token');
+      await s3API.importConfigs(token, file, importExportFormat);
+      setError('');
+      loadConfigs();
+    } catch (err) {
+      setError('Failed to import configs: ' + (err.response?.data?.error || err.message));
+    }
+    e.target.value = '';
+  };
 
   const loadConfigs = async () => {
     setLoading(true)
@@ -182,6 +219,33 @@ function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated })
           <Plus className="h-4 w-4 mr-2" />
           Add Configuration
         </button>
+
+        {/* Bulk Import/Export Buttons */}
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={() => handleExportConfigs('csv')}
+            className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
+            title="Export configs as CSV"
+          >Export CSV</button>
+          <button
+            onClick={() => handleExportConfigs('json')}
+            className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
+            title="Export configs as JSON"
+          >Export JSON</button>
+          <label className="bg-blue-100 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-200 cursor-pointer ml-2">
+            Import
+            <input
+              type="file"
+              accept=".csv,.json"
+              style={{ display: 'none' }}
+              onChange={handleImportConfigs}
+            />
+          </label>
+          <select value={importExportFormat} onChange={e => setImportExportFormat(e.target.value)} className="ml-2 border rounded px-2 py-1">
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+        </div>
       </div>
 
       {error && (

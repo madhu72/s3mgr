@@ -144,9 +144,15 @@ func main() {
 	admin.Use(AuthMiddleware(authService))
 	admin.Use(AdminMiddleware(authService)) // Custom middleware to check admin status
 	{
+		// Bulk user import/export
+		admin.GET("/users/export", authService.ExportUsersHandler)
+		admin.POST("/users/import", authService.ImportUsersHandler)
+
+		// Bulk config import/export
+		admin.GET("/configs/export", s3Service.ExportConfigsHandler)
+		admin.POST("/configs/import", s3Service.ImportConfigsHandler)
+
 		// User management routes
-		admin.GET("/users", authService.GetUsers)
-		admin.POST("/users", authService.CreateUser)
 		admin.PUT("/users/:username", authService.UpdateUser)
 		admin.DELETE("/users/:username", authService.DeleteUser)
 		admin.GET("/users/:username/config", authService.GetUserConfig)

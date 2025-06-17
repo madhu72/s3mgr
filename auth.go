@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/csv"
 	"fmt"
 	"net/http"
 	"strings"
@@ -287,6 +288,85 @@ func (a *AuthService) GetAllUsers() ([]UserResponse, error) {
 	})
 
 	return users, err
+}
+
+// ExportUsersHandler returns all users as CSV or JSON (admin only)
+func (a *AuthService) ExportUsersHandler(c *gin.Context) {
+	format := c.DefaultQuery("format", "csv")
+	users, err := a.GetAllUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get users"})
+		return
+	}
+	if format == "json" {
+		c.Header("Content-Disposition", "attachment; filename=users.json")
+		c.JSON(http.StatusOK, users)
+		return
+	}
+	// Default: CSV
+	c.Header("Content-Disposition", "attachment; filename=users.csv")
+	c.Header("Content-Type", "text/csv")
+	w := csv.NewWriter(c.Writer)
+	defer w.Flush()
+	w.Write([]string{"id","username","email","is_admin","is_active","created_at","updated_at","last_login"})
+	for _, u := range users {
+		w.Write([]string{
+			u.ID,
+			u.Username,
+			u.Email,
+			fmt.Sprintf("%v", u.IsAdmin),
+			fmt.Sprintf("%v", u.IsActive),
+			u.CreatedAt.Format(time.RFC3339),
+			u.UpdatedAt.Format(time.RFC3339),
+			u.LastLogin.Format(time.RFC3339),
+		})
+	}
+}
+
+// ImportUsersHandler accepts CSV or JSON and creates/updates users (admin only)
+func (a *AuthService) ImportUsersHandler(c *gin.Context) {
+	format := c.DefaultQuery("format", "csv")
+	file, _, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File required"})
+		return
+	}
+	defer file.Close()
+	var users []User
+	if format == "json" {
+		dec := json.NewDecoder(file)
+		if err := dec.Decode(&users); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+			return
+		}
+	} else {
+		r := csv.NewReader(file)
+		records, err := r.ReadAll()
+		if err != nil || len(records) < 2 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CSV"})
+			return
+		}
+		for i, rec := range records {
+			if i == 0 { continue } // skip header
+			if len(rec) < 8 { continue }
+			createdAt, _ := time.Parse(time.RFC3339, rec[5])
+			updatedAt, _ := time.Parse(time.RFC3339, rec[6])
+			lastLogin, _ := time.Parse(time.RFC3339, rec[7])
+			users = append(users, User{
+				ID: rec[0], Username: rec[1], Email: rec[2],
+				IsAdmin: rec[3] == "true", IsActive: rec[4] == "true",
+				CreatedAt: createdAt, UpdatedAt: updatedAt, LastLogin: lastLogin,
+			})
+		}
+	}
+	// Save users (create or update)
+	for _, u := range users {
+		userData, _ := json.Marshal(u)
+		a.db.Update(func(txn *badger.Txn) error {
+			return txn.Set([]byte("user:"+u.Username), userData)
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Imported %d users", len(users))})
 }
 
 func (a *AuthService) CreateUser(c *gin.Context) {

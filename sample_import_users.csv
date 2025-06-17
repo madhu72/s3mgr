@@ -1,0 +1,4 @@
+id,username,email,is_admin,is_active,created_at,updated_at,last_login
+1,admin,admin@example.com,true,true,2024-01-01T10:00:00Z,2024-01-01T10:00:00Z,2025-06-01T09:00:00Z
+2,jane,jane@example.com,false,true,2024-02-01T11:00:00Z,2024-02-01T11:00:00Z,2025-06-01T09:00:00Z
+3,bob,bob@example.com,false,false,2024-03-01T12:00:00Z,2024-03-01T12:00:00Z,2025-06-01T09:00:00Z

@@ -30,6 +30,7 @@ function UserManagement() {
   const [selectedUser, setSelectedUser] = useState(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [importExportFormat, setImportExportFormat] = useState('csv')
 
   useEffect(() => {
     loadUsers()
@@ -115,6 +116,42 @@ function UserManagement() {
     return new Date(dateString).toLocaleString()
   }
 
+  // Bulk Export Users
+  const handleExportUsers = async (format = 'csv') => {
+    setError(''); setSuccess('');
+    try {
+      const response = await adminAPI.exportUsers(token, format);
+      const blob = new Blob([response.data], { type: format === 'json' ? 'application/json' : 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `users.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setSuccess(`Exported users as ${format.toUpperCase()}`);
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError('Failed to export users: ' + (err.response?.data?.error || err.message));
+    }
+  };
+
+  // Bulk Import Users
+  const handleImportUsers = async (e) => {
+    setError(''); setSuccess('');
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      await adminAPI.importUsers(token, file, importExportFormat);
+      setSuccess('Imported users successfully');
+      loadUsers();
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError('Failed to import users: ' + (err.response?.data?.error || err.message));
+    }
+    e.target.value = '';
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -144,6 +181,33 @@ function UserManagement() {
           <UserPlus className="h-4 w-4" />
           <span>Add User</span>
         </button>
+
+        {/* Bulk Import/Export Buttons */}
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={() => handleExportUsers('csv')}
+            className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
+            title="Export users as CSV"
+          >Export CSV</button>
+          <button
+            onClick={() => handleExportUsers('json')}
+            className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
+            title="Export users as JSON"
+          >Export JSON</button>
+          <label className="bg-blue-100 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-200 cursor-pointer ml-2">
+            Import
+            <input
+              type="file"
+              accept=".csv,.json"
+              style={{ display: 'none' }}
+              onChange={handleImportUsers}
+            />
+          </label>
+          <select value={importExportFormat} onChange={e => setImportExportFormat(e.target.value)} className="ml-2 border rounded px-2 py-1">
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+        </div>
       </div>
 
       {/* Alerts */}

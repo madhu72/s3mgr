@@ -23,6 +23,19 @@ export const authAPI = {
 
 // S3 API
 export const s3API = {
+  // Bulk Config Export (GET, returns CSV or JSON)
+  exportConfigs: (token, format = 'csv') => api.get(`/admin/configs/export?format=${format}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    responseType: 'blob',
+  }),
+  // Bulk Config Import (POST, accepts CSV or JSON file)
+  importConfigs: (token, file, format = 'csv') => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post(`/admin/configs/import?format=${format}`, formData, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' },
+    });
+  },
   // File operations (with optional config_id)
   getFiles: (configId = null) => {
     const params = configId ? { config_id: configId } : {}
@@ -69,6 +82,19 @@ export const s3API = {
 
 // Admin API
 export const adminAPI = {
+  // Bulk User Export (GET, returns CSV or JSON)
+  exportUsers: (token, format = 'csv') => api.get(`/admin/users/export?format=${format}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    responseType: 'blob',
+  }),
+  // Bulk User Import (POST, accepts CSV or JSON file)
+  importUsers: (token, file, format = 'csv') => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return api.post(`/admin/users/import?format=${format}`, formData, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' },
+    });
+  },
   // User Management
   getUsers: (token) => api.get('/admin/users', {
     headers: { Authorization: `Bearer ${token}` }

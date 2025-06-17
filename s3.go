@@ -2,8 +2,9 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"encoding/csv"
 	"io"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -192,6 +193,109 @@ func (s *S3Service) getDefaultConfig(userID string) (*S3Config, error) {
 }
 
 // API Handlers
+
+// ExportConfigsHandler returns all configs as CSV or JSON (admin only)
+func (s *S3Service) ExportConfigsHandler(c *gin.Context) {
+	format := c.DefaultQuery("format", "csv")
+	var configs []S3Config
+	// For admin: get all configs for all users
+	err := s.db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		prefix := []byte("config:")
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				var cfg S3Config
+				if err := json.Unmarshal(val, &cfg); err != nil {
+					return err
+				}
+				configs = append(configs, cfg)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get configs"})
+		return
+	}
+	if format == "json" {
+		c.Header("Content-Disposition", "attachment; filename=configs.json")
+		c.JSON(http.StatusOK, configs)
+		return
+	}
+	// Default: CSV
+	c.Header("Content-Disposition", "attachment; filename=configs.csv")
+	c.Header("Content-Type", "text/csv")
+	w := csv.NewWriter(c.Writer)
+	defer w.Flush()
+	w.Write([]string{"id","user_id","name","access_key","secret_key","region","bucket_name","endpoint_url","use_ssl","storage_type","is_default","created_at","updated_at"})
+	for _, cfg := range configs {
+		w.Write([]string{
+			cfg.ID,
+			cfg.UserID,
+			cfg.Name,
+			cfg.AccessKey,
+			cfg.SecretKey,
+			cfg.Region,
+			cfg.BucketName,
+			cfg.EndpointURL,
+			fmt.Sprintf("%v", cfg.UseSSL),
+			cfg.StorageType,
+			fmt.Sprintf("%v", cfg.IsDefault),
+			cfg.CreatedAt,
+			cfg.UpdatedAt,
+		})
+	}
+}
+
+// ImportConfigsHandler accepts CSV or JSON and creates/updates configs (admin only)
+func (s *S3Service) ImportConfigsHandler(c *gin.Context) {
+	format := c.DefaultQuery("format", "csv")
+	file, _, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File required"})
+		return
+	}
+	defer file.Close()
+	var configs []S3Config
+	if format == "json" {
+		dec := json.NewDecoder(file)
+		if err := dec.Decode(&configs); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+			return
+		}
+	} else {
+		r := csv.NewReader(file)
+		records, err := r.ReadAll()
+		if err != nil || len(records) < 2 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CSV"})
+			return
+		}
+		for i, rec := range records {
+			if i == 0 { continue }
+			if len(rec) < 13 { continue }
+			configs = append(configs, S3Config{
+				ID: rec[0], UserID: rec[1], Name: rec[2], AccessKey: rec[3], SecretKey: rec[4],
+				Region: rec[5], BucketName: rec[6], EndpointURL: rec[7],
+				UseSSL: rec[8] == "true", StorageType: rec[9], IsDefault: rec[10] == "true",
+				CreatedAt: rec[11], UpdatedAt: rec[12],
+			})
+		}
+	}
+	// Save configs (create or update)
+	for _, cfg := range configs {
+		cfgData, _ := json.Marshal(cfg)
+		s.db.Update(func(txn *badger.Txn) error {
+			return txn.Set([]byte("config:"+cfg.ID), cfgData)
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Imported %d configs", len(configs))})
+}
 
 // GetConfigs returns a list of configs with redacted secrets
 func (s *S3Service) GetConfigs(c *gin.Context) {
