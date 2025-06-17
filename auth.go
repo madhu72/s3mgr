@@ -290,6 +290,16 @@ func (a *AuthService) GetAllUsers() ([]UserResponse, error) {
 	return users, err
 }
 
+// ListUsersHandler returns all users as JSON (admin only)
+func (a *AuthService) ListUsersHandler(c *gin.Context) {
+	users, err := a.GetAllUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get users"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": users})
+}
+
 // ExportUsersHandler returns all users as CSV or JSON (admin only)
 func (a *AuthService) ExportUsersHandler(c *gin.Context) {
 	format := c.DefaultQuery("format", "csv")

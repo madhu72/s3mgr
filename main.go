@@ -148,6 +148,9 @@ func main() {
 		admin.GET("/users/export", authService.ExportUsersHandler)
 		admin.POST("/users/import", authService.ImportUsersHandler)
 
+		// User management list
+		admin.GET("/users", authService.ListUsersHandler)
+
 		// Bulk config import/export
 		admin.GET("/configs/export", s3Service.ExportConfigsHandler)
 		admin.POST("/configs/import", s3Service.ImportConfigsHandler)
