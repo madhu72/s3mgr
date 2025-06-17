@@ -14,6 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"s3mgr/middleware"
+	"s3mgr/audit"
 )
 
 type User struct {
@@ -66,12 +67,25 @@ type Claims struct {
 type AuthService struct {
 	db        *badger.DB
 	jwtSecret []byte
+	auditService *audit.AuditService
 }
 
-func NewAuthService(db *badger.DB) *AuthService {
+// Logout handler
+func (a *AuthService) Logout(c *gin.Context) {
+	username := c.GetString("username")
+	if username == "" {
+		// Try to extract from JWT or fallback to user_id
+		username = c.GetString("user_id")
+	}
+	a.auditService.LogEvent(c, "logout", "user", username, true, nil, nil)
+	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
+}
+
+func NewAuthService(db *badger.DB, audit *audit.AuditService) *AuthService {
 	return &AuthService{
 		db:        db,
 		jwtSecret: []byte("your-secret-key"), // In production, use environment variable
+		auditService: audit,
 	}
 }
 
@@ -119,6 +133,7 @@ func (a *AuthService) validateToken(tokenString string) (*Claims, error) {
 func (a *AuthService) Login(c *gin.Context) {
 	var user User
 	if err := c.ShouldBindJSON(&user); err != nil {
+		a.auditService.LogEvent(c, "login", "user", user.Username, false, err, map[string]interface{}{"error": err.Error()})
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -129,27 +144,25 @@ func (a *AuthService) Login(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-
 		return item.Value(func(val []byte) error {
 			return json.Unmarshal(val, &storedUser)
 		})
 	})
 
 	if err != nil {
-		middleware.LogAuthEvent(c, "login", user.Username, false, err)
+		a.auditService.LogEvent(c, "login", "user", user.Username, false, err, map[string]interface{}{"error": "Invalid credentials"})
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	// Check if user is active
 	if !storedUser.IsActive {
-		middleware.LogAuthEvent(c, "login", user.Username, false, fmt.Errorf("user account is inactive"))
+		a.auditService.LogEvent(c, "login", "user", storedUser.Username, false, fmt.Errorf("user account is inactive"), map[string]interface{}{"error": "Account is inactive"})
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Account is inactive"})
 		return
 	}
 
 	if !a.checkPasswordHash(user.Password, storedUser.Password) {
-		middleware.LogAuthEvent(c, "login", user.Username, false, fmt.Errorf("invalid password"))
+		a.auditService.LogEvent(c, "login", "user", storedUser.Username, false, fmt.Errorf("invalid password"), map[string]interface{}{"error": "Invalid credentials"})
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
@@ -163,12 +176,17 @@ func (a *AuthService) Login(c *gin.Context) {
 
 	token, err := a.generateToken(storedUser.Username, storedUser.IsAdmin)
 	if err != nil {
-		middleware.LogAuthEvent(c, "login", storedUser.Username, false, err)
+		a.auditService.LogEvent(c, "login", "user", storedUser.Username, false, err, map[string]interface{}{"error": "Failed to generate token"})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
-	middleware.LogAuthEvent(c, "login", storedUser.Username, true, nil)
+	// Set username, user_id, session_id in context for audit logging
+	c.Set("username", storedUser.Username)
+	c.Set("user_id", storedUser.Username)
+	// session_id can be set here if available (e.g., from JWT or generated)
+
+	a.auditService.LogEvent(c, "login", "user", storedUser.Username, true, nil, map[string]interface{}{"status": c.Writer.Status()})
 	c.JSON(http.StatusOK, gin.H{
 		"token":    token,
 		"username": storedUser.Username,
@@ -302,6 +320,12 @@ func (a *AuthService) ListUsersHandler(c *gin.Context) {
 
 // ExportUsersHandler returns all users as CSV or JSON (admin only)
 func (a *AuthService) ExportUsersHandler(c *gin.Context) {
+	defer func() {
+		success := c.Writer.Status() == http.StatusOK
+		auditDetails := map[string]interface{}{"format": c.DefaultQuery("format", "csv")}
+		a.auditService.LogEvent(c, "export_users", "user", "", success, nil, auditDetails)
+	}()
+
 	format := c.DefaultQuery("format", "csv")
 	users, err := a.GetAllUsers()
 	if err != nil {
@@ -335,6 +359,12 @@ func (a *AuthService) ExportUsersHandler(c *gin.Context) {
 
 // ImportUsersHandler accepts CSV or JSON and creates/updates users (admin only)
 func (a *AuthService) ImportUsersHandler(c *gin.Context) {
+	defer func() {
+		success := c.Writer.Status() == http.StatusOK
+		auditDetails := map[string]interface{}{"format": c.DefaultQuery("format", "csv")}
+		a.auditService.LogEvent(c, "import_users", "user", "", success, nil, auditDetails)
+	}()
+
 	format := c.DefaultQuery("format", "csv")
 	file, _, err := c.Request.FormFile("file")
 	if err != nil {

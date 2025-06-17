@@ -51,9 +51,9 @@ func main() {
 	defer db.Close()
 
 	// Initialize services
-	authService := NewAuthService(db)
+	auditService = audit.NewAuditService(db)
+	authService := NewAuthService(db, auditService)
 	s3Service := NewS3Service(db)
-	auditService := audit.NewAuditService(db)
 
 	// Set Gin mode based on log level
 	if cfg.Logging.Level == "debug" {
@@ -120,6 +120,7 @@ func main() {
 	protected := api.Group("")
 	protected.Use(AuthMiddleware(authService))
 	{
+		protected.POST("/auth/logout", authService.Logout)
 		// User profile routes
 		protected.POST("/auth/change-password", authService.ChangePassword)
 

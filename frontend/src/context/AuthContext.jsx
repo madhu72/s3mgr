@@ -74,10 +74,17 @@ export function AuthProvider({ children }) {
     setUsername(username)
   }
 
-  const logout = () => {
-    setToken(null)
-    setUsername(null)
-    setUserInfo(null)
+  const logout = async () => {
+    try {
+      await authAPI.logout()
+    } catch (err) {
+      // Even if logout fails (e.g. expired token), clear client state
+      console.warn('Logout API call failed:', err)
+    } finally {
+      setToken(null)
+      setUsername(null)
+      setUserInfo(null)
+    }
   }
 
   const isAdmin = () => {
