@@ -45,7 +45,7 @@ export const s3API = {
     if (configId) {
       formData.append('config_id', configId)
     }
-    return api.post('/upload', formData, {
+    return api.post('/files/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -53,7 +53,7 @@ export const s3API = {
   },
   downloadFile: (key, configId = null) => {
     const params = configId ? { config_id: configId } : {}
-    return api.get(`/download/${encodeURIComponent(key)}`, {
+    return api.get(`/files/download/${encodeURIComponent(key)}`, {
       params,
       responseType: 'blob',
     })

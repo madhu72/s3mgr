@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 
 function UserManagement() {
-  const { token } = useAuth()
+  const { token, isAdmin } = useAuth()
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
@@ -182,32 +182,34 @@ function UserManagement() {
           <span>Add User</span>
         </button>
 
-        {/* Bulk Import/Export Buttons */}
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={() => handleExportUsers('csv')}
-            className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
-            title="Export users as CSV"
-          >Export CSV</button>
-          <button
-            onClick={() => handleExportUsers('json')}
-            className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
-            title="Export users as JSON"
-          >Export JSON</button>
-          <label className="bg-blue-100 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-200 cursor-pointer ml-2">
-            Import
-            <input
-              type="file"
-              accept=".csv,.json"
-              style={{ display: 'none' }}
-              onChange={handleImportUsers}
-            />
-          </label>
-          <select value={importExportFormat} onChange={e => setImportExportFormat(e.target.value)} className="ml-2 border rounded px-2 py-1">
-            <option value="csv">CSV</option>
-            <option value="json">JSON</option>
-          </select>
-        </div>
+        {/* Bulk Import/Export Buttons (Admins only) */}
+        {isAdmin() && (
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => handleExportUsers('csv')}
+              className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
+              title="Export users as CSV"
+            >Export CSV</button>
+            <button
+              onClick={() => handleExportUsers('json')}
+              className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
+              title="Export users as JSON"
+            >Export JSON</button>
+            <label className="bg-blue-100 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-200 cursor-pointer ml-2">
+              Import
+              <input
+                type="file"
+                accept=".csv,.json"
+                style={{ display: 'none' }}
+                onChange={handleImportUsers}
+              />
+            </label>
+            <select value={importExportFormat} onChange={e => setImportExportFormat(e.target.value)} className="ml-2 border rounded px-2 py-1">
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Alerts */}
@@ -619,3 +621,4 @@ function EditUserModal({ user, onClose, onSubmit }) {
 }
 
 export default UserManagement
+

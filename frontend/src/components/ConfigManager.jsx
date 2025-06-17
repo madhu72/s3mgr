@@ -3,6 +3,7 @@ import { s3API } from '../services/api'
 import { Plus, Edit, Trash2, Star, StarOff, Settings, Database, Cloud, X, Copy, Eye, EyeOff } from 'lucide-react'
 import S3Config from './S3Config'
 import AutoMinIOConfig from './AutoMinIOConfig'
+import { useAuth } from '../context/AuthContext'
 
 function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated }) {
   const [configs, setConfigs] = useState([])
@@ -14,6 +15,7 @@ function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated })
   const [showCredentials, setShowCredentials] = useState({}) // Track which configs show credentials
   const [copySuccess, setCopySuccess] = useState({}) // Track copy success messages
   const [importExportFormat, setImportExportFormat] = useState('csv')
+  const { isAdmin } = useAuth()
 
   useEffect(() => {
     loadConfigs()
@@ -220,32 +222,34 @@ function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated })
           Add Configuration
         </button>
 
-        {/* Bulk Import/Export Buttons */}
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={() => handleExportConfigs('csv')}
-            className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
-            title="Export configs as CSV"
-          >Export CSV</button>
-          <button
-            onClick={() => handleExportConfigs('json')}
-            className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
-            title="Export configs as JSON"
-          >Export JSON</button>
-          <label className="bg-blue-100 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-200 cursor-pointer ml-2">
-            Import
-            <input
-              type="file"
-              accept=".csv,.json"
-              style={{ display: 'none' }}
-              onChange={handleImportConfigs}
-            />
-          </label>
-          <select value={importExportFormat} onChange={e => setImportExportFormat(e.target.value)} className="ml-2 border rounded px-2 py-1">
-            <option value="csv">CSV</option>
-            <option value="json">JSON</option>
-          </select>
-        </div>
+        {/* Bulk Import/Export Buttons (Admins only) */}
+        {isAdmin() && (
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => handleExportConfigs('csv')}
+              className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
+              title="Export configs as CSV"
+            >Export CSV</button>
+            <button
+              onClick={() => handleExportConfigs('json')}
+              className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
+              title="Export configs as JSON"
+            >Export JSON</button>
+            <label className="bg-blue-100 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-200 cursor-pointer ml-2">
+              Import
+              <input
+                type="file"
+                accept=".csv,.json"
+                style={{ display: 'none' }}
+                onChange={handleImportConfigs}
+              />
+            </label>
+            <select value={importExportFormat} onChange={e => setImportExportFormat(e.target.value)} className="ml-2 border rounded px-2 py-1">
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+            </select>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -480,3 +484,4 @@ function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated })
 }
 
 export default ConfigManager
+
