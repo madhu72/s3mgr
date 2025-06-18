@@ -28,23 +28,30 @@ function AuditLogs() {
     action: '',
     resource: '',
     start_time: '',
-    end_time: '',
-    limit: 100
+    end_time: ''
   })
   const [expandedLogs, setExpandedLogs] = useState(new Set())
   const [error, setError] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
+  // Pagination state
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [total, setTotal] = useState(0)
 
   useEffect(() => {
     loadAuditLogs()
-  }, [])
+    // eslint-disable-next-line
+  }, [page, pageSize])
 
   const loadAuditLogs = async () => {
     try {
       setLoading(true)
       setError('')
-      const response = await adminAPI.getAuditLogs(token, filters)
+      // Add pagination params to filters
+      const params = { ...filters, page, page_size: pageSize }
+      const response = await adminAPI.getAuditLogs(token, params)
       setLogs(response.data.audit_logs || [])
+      setTotal(response.data.total || 0)
     } catch (error) {
       console.error('Failed to load audit logs:', error)
       setError('Failed to load audit logs: ' + (error.response?.data?.error || error.message))
@@ -61,7 +68,13 @@ function AuditLogs() {
   }
 
   const applyFilters = () => {
+    setPage(1)
     loadAuditLogs()
+  }
+
+  const handlePageSizeChange = (e) => {
+    setPageSize(Number(e.target.value))
+    setPage(1)
   }
 
   const clearFilters = () => {
@@ -74,6 +87,7 @@ function AuditLogs() {
       limit: 100
     })
     setSearchTerm('')
+    setPage(1)
   }
 
   const toggleLogExpansion = (logId) => {
@@ -109,7 +123,10 @@ function AuditLogs() {
     window.URL.revokeObjectURL(url)
   }
 
-  const filteredLogs = logs.filter(log => {
+  // Ensure logs are displayed in descending order by timestamp
+  const sortedLogs = [...logs].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+
+  const filteredLogs = sortedLogs.filter(log => {
     if (!searchTerm) return true
     const searchLower = searchTerm.toLowerCase()
     return (
@@ -242,6 +259,10 @@ function AuditLogs() {
               <option value="delete_user">Delete User</option>
               <option value="change_password">Change Password</option>
               <option value="query_audit_logs">Query Audit Logs</option>
+              <option value="import_users">Import Users</option>
+              <option value="export_users">Export Users</option>
+              <option value="import_configs">Import Configs</option>
+              <option value="export_configs">Export Configs</option>
             </select>
           </div>
 
@@ -282,19 +303,21 @@ function AuditLogs() {
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Limit
+          <div className="flex items-center space-x-2">
+            <label htmlFor="pageSize" className="text-sm font-medium text-gray-700">
+              Show
             </label>
             <select
-              value={filters.limit}
-              onChange={(e) => handleFilterChange('limit', parseInt(e.target.value))}
+              id="pageSize"
+              name="pageSize"
+              value={pageSize}
+              onChange={handlePageSizeChange}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
             >
+              <option value={10}>10 records</option>
+              <option value={20}>20 records</option>
               <option value={50}>50 records</option>
               <option value={100}>100 records</option>
-              <option value={250}>250 records</option>
-              <option value={500}>500 records</option>
             </select>
           </div>
         </div>
@@ -321,127 +344,161 @@ function AuditLogs() {
         </div>
       </div>
 
-      {/* Logs List */}
-      <div className="bg-white rounded-lg shadow-sm border">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-medium text-gray-900">
-              Audit Logs ({filteredLogs.length} records)
-            </h3>
-          </div>
-        </div>
-
-        <div className="divide-y divide-gray-200">
-          {filteredLogs.map((log) => (
-            <div key={log.id} className="p-6 hover:bg-gray-50">
-              <div className="flex items-start justify-between">
-                <div className="flex items-start space-x-4 flex-1">
-                  <div className="flex items-center space-x-2">
-                    {getStatusIcon(log.success)}
-                    {getActionIcon(log.action)}
-                  </div>
-                  
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center space-x-4 mb-2">
-                      <span className="text-sm font-medium text-gray-900">
-                        {log.action.replace(/_/g, ' ').toUpperCase()}
-                      </span>
-                      {log.resource && (
-                        <span className="text-sm text-gray-500">
-                          → {log.resource}
-                        </span>
-                      )}
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        log.success 
-                          ? 'bg-green-100 text-green-800' 
-                          : 'bg-red-100 text-red-800'
-                      }`}>
-                        {log.success ? 'Success' : 'Failed'}
-                      </span>
-                    </div>
-                    
-                    <div className="flex items-center space-x-6 text-sm text-gray-500">
-                      <div className="flex items-center">
-                        <User className="h-3 w-3 mr-1" />
-                        {log.username || log.user_id}
-                      </div>
-                      <div className="flex items-center">
-                        <Clock className="h-3 w-3 mr-1" />
-                        {formatDate(log.timestamp)}
-                      </div>
-                      {log.client_ip && (
-                        <div className="flex items-center">
-                          <Activity className="h-3 w-3 mr-1" />
-                          {log.client_ip}
-                        </div>
-                      )}
-                    </div>
-                    
-                    {log.error && (
-                      <div className="mt-2 text-sm text-red-600 bg-red-50 p-2 rounded">
-                        <strong>Error:</strong> {log.error}
-                      </div>
-                    )}
-                  </div>
+      <div className="divide-y divide-gray-200">
+        {filteredLogs.map((log) => (
+          <div key={log.id} className="p-6 hover:bg-gray-50">
+            <div className="flex items-start justify-between">
+              <div className="flex items-start space-x-4 flex-1">
+                <div className="flex items-center space-x-2">
+                  {getStatusIcon(log.success)}
+                  {getActionIcon(log.action)}
                 </div>
                 
-                <button
-                  onClick={() => toggleLogExpansion(log.id)}
-                  className="text-gray-400 hover:text-gray-600 p-1"
-                >
-                  {expandedLogs.has(log.id) ? (
-                    <ChevronDown className="h-4 w-4" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4" />
-                  )}
-                </button>
-              </div>
-              
-              {expandedLogs.has(log.id) && (
-                <div className="mt-4 pl-10 border-l-2 border-gray-200">
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <h4 className="text-sm font-medium text-gray-900 mb-3">Details</h4>
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <span className="font-medium text-gray-700">Log ID:</span>
-                        <span className="ml-2 text-gray-600">{log.id}</span>
-                      </div>
-                      <div>
-                        <span className="font-medium text-gray-700">Session ID:</span>
-                        <span className="ml-2 text-gray-600">{log.session_id || 'N/A'}</span>
-                      </div>
-                      <div>
-                        <span className="font-medium text-gray-700">User Agent:</span>
-                        <span className="ml-2 text-gray-600 break-all">{log.user_agent || 'N/A'}</span>
-                      </div>
-                      <div>
-                        <span className="font-medium text-gray-700">Resource ID:</span>
-                        <span className="ml-2 text-gray-600">{log.resource_id || 'N/A'}</span>
-                      </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center space-x-4 mb-2">
+                    <span className="text-sm font-medium text-gray-900">
+                      {log.action.replace(/_/g, ' ').toUpperCase()}
+                    </span>
+                    {log.resource && (
+                      <span className="text-sm text-gray-500">
+                        → {log.resource}
+                      </span>
+                    )}
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      log.success 
+                        ? 'bg-green-100 text-green-800' 
+                        : 'bg-red-100 text-red-800'
+                    }`}>
+                      {log.success ? 'Success' : 'Failed'}
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center space-x-6 text-sm text-gray-500">
+                    <div className="flex items-center">
+                      <User className="h-3 w-3 mr-1" />
+                      {log.username || log.user_id}
                     </div>
-                    
-                    {log.details && Object.keys(log.details).length > 0 && (
-                      <div className="mt-4">
-                        <span className="font-medium text-gray-700">Additional Details:</span>
-                        <pre className="mt-2 text-xs bg-white p-3 rounded border overflow-x-auto">
-                          {JSON.stringify(log.details, null, 2)}
-                        </pre>
+                    <div className="flex items-center">
+                      <Clock className="h-3 w-3 mr-1" />
+                      {formatDate(log.timestamp)}
+                    </div>
+                    {log.client_ip && (
+                      <div className="flex items-center">
+                        <Activity className="h-3 w-3 mr-1" />
+                        {log.client_ip}
                       </div>
                     )}
                   </div>
+                  
+                  {log.error && (
+                    <div className="mt-2 text-sm text-red-600 bg-red-50 p-2 rounded">
+                      <strong>Error:</strong> {log.error}
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
+              
+              <button
+                onClick={() => toggleLogExpansion(log.id)}
+                className="text-gray-400 hover:text-gray-600 p-1"
+              >
+                {expandedLogs.has(log.id) ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+              </button>
             </div>
-          ))}
-        </div>
-        
-        {filteredLogs.length === 0 && (
-          <div className="text-center py-12">
-            <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <p className="text-gray-500">No audit logs found</p>
-            <p className="text-sm text-gray-400 mt-1">Try adjusting your filters or date range</p>
+            
+            {expandedLogs.has(log.id) && (
+              <div className="mt-4 pl-10 border-l-2 border-gray-200">
+                <div className="bg-gray-50 p-4 rounded-lg">
+                  <h4 className="text-sm font-medium text-gray-900 mb-3">Details</h4>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <span className="font-medium text-gray-700">Log ID:</span>
+                      <span className="ml-2 text-gray-600">{log.id}</span>
+                    </div>
+                    <div>
+                      <span className="font-medium text-gray-700">Session ID:</span>
+                      <span className="ml-2 text-gray-600">{log.session_id || 'N/A'}</span>
+                    </div>
+                    <div>
+                      <span className="font-medium text-gray-700">User Agent:</span>
+                      <span className="ml-2 text-gray-600 break-all">{log.user_agent || 'N/A'}</span>
+                    </div>
+                    <div>
+                      <span className="font-medium text-gray-700">Resource ID:</span>
+                      <span className="ml-2 text-gray-600">{log.resource_id || 'N/A'}</span>
+                    </div>
+                  </div>
+                  
+                  {log.details && Object.keys(log.details).length > 0 && (
+                    <div className="mt-4">
+                      <span className="font-medium text-gray-700">Additional Details:</span>
+                      <pre className="mt-2 text-xs bg-white p-3 rounded border overflow-x-auto">
+                        {JSON.stringify(log.details, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        ))}
+      </div>
+      
+      {logs.length === 0 && (
+        <div className="text-center py-12">
+          <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <p className="text-gray-500">No audit logs found</p>
+          <p className="text-sm text-gray-400 mt-1">Try adjusting your filters or date range</p>
+        </div>
+      )}
+      {/* Pagination Controls */}
+      <div className="flex justify-between items-center mt-4">
+        <button
+          className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+          onClick={() => setPage(1)}
+          disabled={page === 1}
+        >First</button>
+        <button
+          className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+          onClick={() => setPage(p => Math.max(1, p - 1))}
+          disabled={page === 1}
+        >Prev</button>
+        <div className="flex items-center space-x-1">
+          {(() => {
+            const totalPages = Math.max(1, Math.ceil(total / pageSize));
+            let start = Math.max(1, page - 5);
+            let end = Math.min(totalPages, start + 9);
+            if (end - start < 9) start = Math.max(1, end - 9);
+            start = Math.max(1, start);
+            end = Math.min(totalPages, end);
+            const pages = [];
+            for (let i = start; i <= end; ++i) {
+              pages.push(
+                <button
+                  key={i}
+                  className={`px-3 py-1 rounded ${i === page ? 'bg-blue-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}`}
+                  onClick={() => setPage(i)}
+                  disabled={i === page}
+                >{i}</button>
+              );
+            }
+            return pages;
+          })()}
+        </div>
+        <button
+          className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+          onClick={() => setPage(p => Math.min(Math.ceil(total / pageSize), p + 1))}
+          disabled={page >= Math.ceil(total / pageSize)}
+        >Next</button>
+        <button
+          className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+          onClick={() => setPage(Math.ceil(total / pageSize))}
+          disabled={page >= Math.ceil(total / pageSize)}
+        >Last</button>
       </div>
     </div>
   )

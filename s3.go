@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
-	"s3mgr/audit"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,10 +15,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/dgraph-io/badger/v4"
 	"github.com/gin-gonic/gin"
-)
 
-// Global auditService for use in handlers
-var auditService *audit.AuditService
+	"s3mgr/audit"
+)
 
 type S3Config struct {
 	ID          string `json:"id"`
@@ -38,11 +36,12 @@ type S3Config struct {
 }
 
 type S3Service struct {
-	db *badger.DB
+	db           *badger.DB
+	auditService *audit.AuditService
 }
 
-func NewS3Service(db *badger.DB) *S3Service {
-	return &S3Service{db: db}
+func NewS3Service(db *badger.DB, auditService *audit.AuditService) *S3Service {
+	return &S3Service{db: db, auditService: auditService}
 }
 
 func (s *S3Service) generateConfigID() string {
@@ -143,6 +142,60 @@ func (s *S3Service) saveConfig(config S3Config) error {
 	})
 }
 
+// DeleteConfig is a Gin handler for deleting a user config
+func (s *S3Service) DeleteConfig(c *gin.Context) {
+	userID := c.GetString("user_id")
+	configID := c.Param("id")
+
+	// Check if there are other configs
+	configs, err := s.getUserConfigs(userID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to check configurations"})
+		return
+	}
+	if len(configs) <= 1 {
+		c.JSON(400, gin.H{"error": "Cannot delete the last configuration"})
+		return
+	}
+
+	if err := s.deleteConfig(userID, configID); err != nil {
+		c.JSON(500, gin.H{"error": "Failed to delete configuration"})
+		return
+	}
+
+	// If this was the default, set another as default
+	var deletedWasDefault bool
+	for _, cfg := range configs {
+		if cfg.ID == configID && cfg.IsDefault {
+			deletedWasDefault = true
+			break
+		}
+	}
+	if deletedWasDefault && len(configs) > 1 {
+		for _, cfg := range configs {
+			if cfg.ID != configID {
+				s.setDefaultConfig(userID, cfg.ID)
+				break
+			}
+		}
+	}
+
+	c.JSON(200, gin.H{"message": "Configuration deleted successfully"})
+}
+
+// SetDefaultConfig is a Gin handler for setting a config as default
+func (s *S3Service) SetDefaultConfig(c *gin.Context) {
+	userID := c.GetString("user_id")
+	configID := c.Param("id")
+
+	if err := s.setDefaultConfig(userID, configID); err != nil {
+		c.JSON(500, gin.H{"error": "Failed to set default configuration"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "Default configuration set"})
+}
+
+// Internal utility for deleting a config
 func (s *S3Service) deleteConfig(userID, configID string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
 		key := fmt.Sprintf("user_config_%s_%s", userID, configID)
@@ -150,8 +203,8 @@ func (s *S3Service) deleteConfig(userID, configID string) error {
 	})
 }
 
+// Internal utility for setting a config as default
 func (s *S3Service) setDefaultConfig(userID, configID string) error {
-	// First, remove default flag from all configs
 	configs, err := s.getUserConfigs(userID)
 	if err != nil {
 		return err
@@ -165,15 +218,16 @@ func (s *S3Service) setDefaultConfig(userID, configID string) error {
 			}
 		}
 	}
-
-	// Set the new default
-	config, err := s.getConfigByID(userID, configID)
-	if err != nil {
-		return err
+	for _, config := range configs {
+		if config.ID == configID {
+			config.IsDefault = true
+			if err := s.saveConfig(config); err != nil {
+				return err
+			}
+			break
+		}
 	}
-
-	config.IsDefault = true
-	return s.saveConfig(*config)
+	return nil
 }
 
 func (s *S3Service) getDefaultConfig(userID string) (*S3Config, error) {
@@ -198,16 +252,364 @@ func (s *S3Service) getDefaultConfig(userID string) (*S3Config, error) {
 
 // API Handlers
 
+// UploadFile handles file upload to S3
+func (s *S3Service) UploadFile(c *gin.Context) {
+	// Audit logging helper
+	logAudit := func(success bool, err error, details map[string]interface{}) {
+		if s.auditService != nil {
+			s.auditService.LogEvent(c, "upload_file", "file", "", success, err, details)
+		}
+	}
+
+	userID := c.GetString("user_id")
+	configID := c.Query("config_id")
+
+	var config *S3Config
+	var err error
+	if configID != "" {
+		config, err = s.getConfigByID(userID, configID)
+	} else {
+		config, err = s.getDefaultConfig(userID)
+	}
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
+		return
+	}
+	client := s.createS3Client(*config)
+	if client == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage client"})
+		return
+	}
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File required"})
+		return
+	}
+	defer file.Close()
+	userPrefix := fmt.Sprintf("users/%s/", userID)
+	key := userPrefix + header.Filename
+
+	// Detect file size
+	fileSize := header.Size
+	const multipartThreshold = 5 * 1024 * 1024 // 5MB
+
+	if fileSize > multipartThreshold {
+		// --- Multipart upload for large files ---
+		createResp, err := client.CreateMultipartUpload(&s3.CreateMultipartUploadInput{
+			Bucket: aws.String(config.BucketName),
+			Key:    aws.String(key),
+		})
+		if err != nil {
+			logAudit(false, err, map[string]interface{}{
+				"stage": "initiate_multipart",
+				"filename": header.Filename,
+				"size": fileSize,
+			})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initiate multipart upload: " + err.Error()})
+			return
+		}
+
+		var completedParts []*s3.CompletedPart
+		const partSize = 5 * 1024 * 1024 // 5MB
+		buffer := make([]byte, partSize)
+		partNumber := int64(1)
+		for {
+			n, readErr := file.Read(buffer)
+			if n == 0 && readErr == io.EOF {
+				break
+			}
+			if n == 0 && readErr != nil {
+				logAudit(false, readErr, map[string]interface{}{
+					"stage": "read_part",
+					"filename": header.Filename,
+					"size": fileSize,
+					"part_number": partNumber,
+				})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file part: " + readErr.Error()})
+				return
+			}
+			partInput := &s3.UploadPartInput{
+				Bucket:     aws.String(config.BucketName),
+				Key:        aws.String(key),
+				PartNumber: aws.Int64(partNumber),
+				UploadId:   createResp.UploadId,
+				Body:       strings.NewReader(string(buffer[:n])),
+			}
+			partResp, uploadErr := client.UploadPart(partInput)
+			if uploadErr != nil {
+				client.AbortMultipartUpload(&s3.AbortMultipartUploadInput{
+					Bucket:   aws.String(config.BucketName),
+					Key:      aws.String(key),
+					UploadId: createResp.UploadId,
+				})
+				logAudit(false, uploadErr, map[string]interface{}{
+					"stage": "upload_part",
+					"filename": header.Filename,
+					"size": fileSize,
+					"part_number": partNumber,
+				})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload part: " + uploadErr.Error()})
+				return
+			}
+			completedParts = append(completedParts, &s3.CompletedPart{
+				ETag:       partResp.ETag,
+				PartNumber: aws.Int64(partNumber),
+			})
+			partNumber++
+			if readErr == io.EOF {
+				break
+			}
+		}
+		// Complete multipart upload
+		_, err = client.CompleteMultipartUpload(&s3.CompleteMultipartUploadInput{
+			Bucket:   aws.String(config.BucketName),
+			Key:      aws.String(key),
+			UploadId: createResp.UploadId,
+			MultipartUpload: &s3.CompletedMultipartUpload{
+				Parts: completedParts,
+			},
+		})
+		if err != nil {
+			logAudit(false, err, map[string]interface{}{
+				"stage": "complete_multipart",
+				"filename": header.Filename,
+				"size": fileSize,
+			})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to complete multipart upload: " + err.Error()})
+			return
+		}
+		logAudit(true, nil, map[string]interface{}{
+			"stage": "multipart_upload",
+			"filename": header.Filename,
+			"size": fileSize,
+			"parts": len(completedParts),
+		})
+		c.JSON(http.StatusOK, gin.H{"message": "File uploaded successfully (multipart)", "key": header.Filename})
+		return
+	}
+
+	// --- Small file: use PutObject ---
+	_, err = client.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String(config.BucketName),
+		Key:    aws.String(key),
+		Body:   file,
+	})
+	if err != nil {
+		logAudit(false, err, map[string]interface{}{
+			"stage": "put_object",
+			"filename": header.Filename,
+			"size": fileSize,
+		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload file: " + err.Error()})
+		return
+	}
+	logAudit(true, nil, map[string]interface{}{
+		"stage": "put_object",
+		"filename": header.Filename,
+		"size": fileSize,
+	})
+	c.JSON(http.StatusOK, gin.H{"message": "File uploaded successfully", "key": header.Filename})
+}
+
+
+// DownloadFile handles file download from S3
+func (s *S3Service) DownloadFile(c *gin.Context) {
+	// Audit logging helper
+	logAudit := func(success bool, err error, details map[string]interface{}) {
+		if s.auditService != nil {
+			s.auditService.LogEvent(c, "download_file", "file", "", success, err, details)
+		}
+	}
+
+	userID := c.GetString("user_id")
+	configID := c.Query("config_id")
+	key := c.Param("key")
+
+	var config *S3Config
+	var err error
+	if configID != "" {
+		config, err = s.getConfigByID(userID, configID)
+	} else {
+		config, err = s.getDefaultConfig(userID)
+	}
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
+		return
+	}
+	client := s.createS3Client(*config)
+	if client == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage client"})
+		return
+	}
+	userPrefix := fmt.Sprintf("users/%s/", userID)
+	fullKey := userPrefix + key
+	resp, err := client.GetObject(&s3.GetObjectInput{
+		Bucket: aws.String(config.BucketName),
+		Key:    aws.String(fullKey),
+	})
+	if err != nil {
+		logAudit(false, err, map[string]interface{}{
+			"filename": key,
+			"full_key": fullKey,
+			"stage": "get_object",
+		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to download file: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	c.Header("Content-Disposition", "attachment; filename="+key)
+	c.Header("Content-Type", *resp.ContentType)
+	c.Status(http.StatusOK)
+	_, _ = io.Copy(c.Writer, resp.Body)
+	// Log success (content length may be nil for some S3 backends)
+	var size int64 = 0
+	if resp.ContentLength != nil {
+		size = *resp.ContentLength
+	}
+	logAudit(true, nil, map[string]interface{}{
+		"filename": key,
+		"full_key": fullKey,
+		"size": size,
+	})
+}
+
+// ListFiles lists files in S3 with pagination
+func (s *S3Service) ListFiles(c *gin.Context) {
+	userID := c.GetString("user_id")
+	configID := c.Query("config_id")
+	page := 1
+	pageSize := 10
+	if p := c.Query("page"); p != "" {
+		fmt.Sscanf(p, "%d", &page)
+	}
+	if ps := c.Query("page_size"); ps != "" {
+		fmt.Sscanf(ps, "%d", &pageSize)
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
+	var config *S3Config
+	var err error
+	if configID != "" {
+		config, err = s.getConfigByID(userID, configID)
+	} else {
+		config, err = s.getDefaultConfig(userID)
+	}
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
+		return
+	}
+	client := s.createS3Client(*config)
+	if client == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage client"})
+		return
+	}
+	userPrefix := fmt.Sprintf("users/%s/", userID)
+	result, err := client.ListObjects(&s3.ListObjectsInput{
+		Bucket: aws.String(config.BucketName),
+		Prefix: aws.String(userPrefix),
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list files: " + err.Error()})
+		return
+	}
+	var files []map[string]interface{}
+	for _, obj := range result.Contents {
+		displayKey := strings.TrimPrefix(*obj.Key, userPrefix)
+		if displayKey == "" {
+			continue
+		}
+		files = append(files, map[string]interface{}{
+			"key":           displayKey,
+			"full_key":      *obj.Key,
+			"size":          *obj.Size,
+			"last_modified": obj.LastModified.Format(time.RFC3339),
+		})
+	}
+	total := len(files)
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+	paginated := files[start:end]
+	c.JSON(http.StatusOK, gin.H{
+		"files":       paginated,
+		"total":       total,
+		"page":        page,
+		"page_size":   pageSize,
+		"config_id":   config.ID,
+		"config_name": config.Name,
+	})
+}
+
+// DeleteFile deletes a file from S3
+func (s *S3Service) DeleteFile(c *gin.Context) {
+	// Audit logging helper
+	logAudit := func(success bool, err error, details map[string]interface{}) {
+		if s.auditService != nil {
+			s.auditService.LogEvent(c, "delete_file", "file", "", success, err, details)
+		}
+	}
+
+	userID := c.GetString("user_id")
+	configID := c.Query("config_id")
+	key := c.Param("key")
+
+	var config *S3Config
+	var err error
+	if configID != "" {
+		config, err = s.getConfigByID(userID, configID)
+	} else {
+		config, err = s.getDefaultConfig(userID)
+	}
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
+		return
+	}
+	client := s.createS3Client(*config)
+	if client == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage client"})
+		return
+	}
+	userPrefix := fmt.Sprintf("users/%s/", userID)
+	fullKey := userPrefix + key
+	_, err = client.DeleteObject(&s3.DeleteObjectInput{
+		Bucket: aws.String(config.BucketName),
+		Key:    aws.String(fullKey),
+	})
+	if err != nil {
+		logAudit(false, err, map[string]interface{}{
+			"filename": key,
+			"full_key": fullKey,
+		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete file: " + err.Error()})
+		return
+	}
+	logAudit(true, nil, map[string]interface{}{
+		"filename": key,
+		"full_key": fullKey,
+	})
+	c.JSON(http.StatusOK, gin.H{"message": "File deleted successfully"})
+}
+
+
 // ExportConfigsHandler returns all configs as CSV or JSON (admin only)
 func (s *S3Service) ExportConfigsHandler(c *gin.Context) {
-	defer func() {
-		success := c.Writer.Status() == http.StatusOK
-		errMsg := ""
-		if !success && len(c.Errors) > 0 {
-			errMsg = c.Errors.String()
+	// Audit logging helper
+	logAudit := func(success bool, err error, details map[string]interface{}) {
+		if s.auditService != nil {
+			s.auditService.LogEvent(c, "export_configs", "config", "", success, err, details)
 		}
-		auditDetails := map[string]interface{}{"format": c.DefaultQuery("format", "csv"), "error": errMsg}
-		auditService.LogEvent(c, "export_configs", "config", "", success, nil, auditDetails)
+	}
+
+	defer func() {
 	}()
 
 	format := c.DefaultQuery("format", "csv")
@@ -234,10 +636,12 @@ func (s *S3Service) ExportConfigsHandler(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		logAudit(false, err, map[string]interface{}{"stage": "get_configs"})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get configs"})
 		return
 	}
 	if format == "json" {
+		logAudit(true, nil, map[string]interface{}{"format": format, "count": len(configs)})
 		c.Header("Content-Disposition", "attachment; filename=configs.json")
 		c.JSON(http.StatusOK, configs)
 		return
@@ -265,23 +669,25 @@ func (s *S3Service) ExportConfigsHandler(c *gin.Context) {
 			cfg.UpdatedAt,
 		})
 	}
+	logAudit(true, nil, map[string]interface{}{"format": format, "count": len(configs)})
 }
 
 // ImportConfigsHandler accepts CSV or JSON and creates/updates configs (admin only)
 func (s *S3Service) ImportConfigsHandler(c *gin.Context) {
-	defer func() {
-		success := c.Writer.Status() == http.StatusOK
-		errMsg := ""
-		if !success && len(c.Errors) > 0 {
-			errMsg = c.Errors.String()
+	// Audit logging helper
+	logAudit := func(success bool, err error, details map[string]interface{}) {
+		if s.auditService != nil {
+			s.auditService.LogEvent(c, "import_configs", "config", "", success, err, details)
 		}
-		auditDetails := map[string]interface{}{"format": c.DefaultQuery("format", "csv"), "error": errMsg}
-		auditService.LogEvent(c, "import_configs", "config", "", success, nil, auditDetails)
+	}
+
+	defer func() {
 	}()
 
 	format := c.DefaultQuery("format", "csv")
 	file, _, err := c.Request.FormFile("file")
 	if err != nil {
+		logAudit(false, err, map[string]interface{}{"stage": "parse_form_file"})
 		c.JSON(http.StatusBadRequest, gin.H{"error": "File required"})
 		return
 	}
@@ -290,6 +696,7 @@ func (s *S3Service) ImportConfigsHandler(c *gin.Context) {
 	if format == "json" {
 		dec := json.NewDecoder(file)
 		if err := dec.Decode(&configs); err != nil {
+			logAudit(false, err, map[string]interface{}{"stage": "decode_json"})
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 			return
 		}
@@ -297,6 +704,7 @@ func (s *S3Service) ImportConfigsHandler(c *gin.Context) {
 		r := csv.NewReader(file)
 		records, err := r.ReadAll()
 		if err != nil || len(records) < 2 {
+			logAudit(false, err, map[string]interface{}{"stage": "decode_csv"})
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CSV"})
 			return
 		}
@@ -322,6 +730,7 @@ func (s *S3Service) ImportConfigsHandler(c *gin.Context) {
 			return txn.Set([]byte("config:"+cfg.ID), cfgData)
 		})
 	}
+	logAudit(true, nil, map[string]interface{}{"format": format, "count": len(configs)})
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Imported %d configs", len(configs))})
 }
 
@@ -371,17 +780,6 @@ func (s *S3Service) GetConfigByID(c *gin.Context) {
 }
 
 func (s *S3Service) CreateConfig(c *gin.Context) {
-	// --- AUDIT LOGGING: Config Create ---
-	defer func() {
-		action := "create_config"
-		resource := "config"
-		configID := c.Param("id")
-		success := c.Writer.Status() == http.StatusCreated
-		details := map[string]interface{}{}
-		if auditService != nil {
-			auditService.LogEvent(c, action, resource, configID, success, nil, details)
-		}
-	}()
 	userID := c.GetString("user_id")
 
 	var config S3Config
@@ -428,17 +826,6 @@ func (s *S3Service) CreateConfig(c *gin.Context) {
 }
 
 func (s *S3Service) UpdateConfig(c *gin.Context) {
-	// --- AUDIT LOGGING: Config Update ---
-	defer func() {
-		action := "update_config"
-		resource := "config"
-		configID := c.Param("id")
-		success := c.Writer.Status() == http.StatusOK
-		details := map[string]interface{}{}
-		if auditService != nil {
-			auditService.LogEvent(c, action, resource, configID, success, nil, details)
-		}
-	}()
 	userID := c.GetString("user_id")
 	configID := c.Param("id")
 
@@ -480,24 +867,8 @@ func (s *S3Service) UpdateConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update configuration"})
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Configuration updated successfully"})
-}
-
-func (s *S3Service) DeleteConfig(c *gin.Context) {
-	// --- AUDIT LOGGING: Config Delete ---
-	defer func() {
-		action := "delete_config"
-		resource := "config"
-		configID := c.Param("id")
-		success := c.Writer.Status() == http.StatusOK
-		details := map[string]interface{}{}
-		if auditService != nil {
-			auditService.LogEvent(c, action, resource, configID, success, nil, details)
-		}
-	}()
-	userID := c.GetString("user_id")
-	configID := c.Param("id")
+	userID = c.GetString("user_id")
+	configID = c.Param("id")
 
 	config, err := s.getConfigByID(userID, configID)
 	if err != nil {
@@ -535,266 +906,7 @@ func (s *S3Service) DeleteConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Configuration deleted successfully"})
 }
 
-func (s *S3Service) SetDefaultConfig(c *gin.Context) {
-	userID := c.GetString("user_id")
-	configID := c.Param("id")
 
-	if err := s.setDefaultConfig(userID, configID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set default configuration"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Default configuration updated"})
-}
-
-func (s *S3Service) ListFiles(c *gin.Context) {
-	userID := c.GetString("user_id")
-	configID := c.Query("config_id")
-
-	var config *S3Config
-	var err error
-
-	if configID != "" {
-		config, err = s.getConfigByID(userID, configID)
-	} else {
-		config, err = s.getDefaultConfig(userID)
-	}
-
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
-		return
-	}
-
-	client := s.createS3Client(*config)
-	if client == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage client"})
-		return
-	}
-
-	// Use user-specific prefix to filter files
-	userPrefix := fmt.Sprintf("users/%s/", userID)
-
-	result, err := client.ListObjects(&s3.ListObjectsInput{
-		Bucket: aws.String(config.BucketName),
-		Prefix: aws.String(userPrefix),
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list files: " + err.Error()})
-		return
-	}
-
-	var files []map[string]interface{}
-	for _, obj := range result.Contents {
-		// Remove the user prefix from the displayed key for cleaner UI
-		displayKey := strings.TrimPrefix(*obj.Key, userPrefix)
-		// Skip if the key is just the prefix (empty folder)
-		if displayKey == "" {
-			continue
-		}
-
-		files = append(files, map[string]interface{}{
-			"key":           displayKey,
-			"full_key":      *obj.Key, // Keep full key for operations
-			"size":          *obj.Size,
-			"last_modified": obj.LastModified.Format(time.RFC3339),
-		})
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"files":       files,
-		"config_id":   config.ID,
-		"config_name": config.Name,
-	})
-}
-
-func (s *S3Service) UploadFile(c *gin.Context) {
-	// --- AUDIT LOGGING: File Upload ---
-	defer func() {
-		// Log upload attempt after response
-		action := "upload_file"
-		resource := "file"
-		filename := ""
-		header, _ := c.FormFile("file")
-		if header != nil {
-			filename = header.Filename
-		}
-		success := c.Writer.Status() == http.StatusOK
-		details := map[string]interface{}{
-			"filename":  filename,
-			"config_id": c.PostForm("config_id"),
-		}
-		if auditService != nil {
-			auditService.LogEvent(c, action, resource, filename, success, nil, details)
-		}
-	}()
-	userID := c.GetString("user_id")
-	configID := c.PostForm("config_id")
-
-	var config *S3Config
-	var err error
-
-	if configID != "" {
-		config, err = s.getConfigByID(userID, configID)
-	} else {
-		config, err = s.getDefaultConfig(userID)
-	}
-
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
-		return
-	}
-
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No file uploaded"})
-		return
-	}
-	defer file.Close()
-
-	client := s.createS3Client(*config)
-	if client == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage client"})
-		return
-	}
-
-	// Use user-specific prefix for file uploads
-	userPrefix := fmt.Sprintf("users/%s/", userID)
-	fileKey := userPrefix + header.Filename
-
-	_, err = client.PutObject(&s3.PutObjectInput{
-		Bucket: aws.String(config.BucketName),
-		Key:    aws.String(fileKey),
-		Body:   file,
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload file: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message":   "File uploaded successfully",
-		"filename":  header.Filename,
-		"config_id": config.ID,
-	})
-}
-
-func (s *S3Service) DownloadFile(c *gin.Context) {
-	// --- AUDIT LOGGING: File Download ---
-	defer func() {
-		action := "download_file"
-		resource := "file"
-		key := c.Param("key")
-		success := c.Writer.Status() == http.StatusOK
-		details := map[string]interface{}{
-			"key":       key,
-			"config_id": c.Query("config_id"),
-		}
-		if auditService != nil {
-			auditService.LogEvent(c, action, resource, key, success, nil, details)
-		}
-	}()
-	userID := c.GetString("user_id")
-	key := c.Param("key")
-	configID := c.Query("config_id")
-
-	var config *S3Config
-	var err error
-
-	if configID != "" {
-		config, err = s.getConfigByID(userID, configID)
-	} else {
-		config, err = s.getDefaultConfig(userID)
-	}
-
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
-		return
-	}
-
-	client := s.createS3Client(*config)
-	if client == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage client"})
-		return
-	}
-
-	// Use user-specific prefix for file downloads
-	userPrefix := fmt.Sprintf("users/%s/", userID)
-	fullKey := userPrefix + key
-
-	result, err := client.GetObject(&s3.GetObjectInput{
-		Bucket: aws.String(config.BucketName),
-		Key:    aws.String(fullKey),
-	})
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "File not found: " + err.Error()})
-		return
-	}
-	defer result.Body.Close()
-
-	c.Header("Content-Disposition", "attachment; filename="+key)
-	c.Header("Content-Type", "application/octet-stream")
-
-	_, err = io.Copy(c.Writer, result.Body)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to download file"})
-		return
-	}
-}
-
-func (s *S3Service) DeleteFile(c *gin.Context) {
-	// --- AUDIT LOGGING: File Delete ---
-	defer func() {
-		action := "delete_file"
-		resource := "file"
-		key := c.Param("key")
-		success := c.Writer.Status() == http.StatusOK
-		details := map[string]interface{}{
-			"key":       key,
-			"config_id": c.Query("config_id"),
-		}
-		if auditService != nil {
-			auditService.LogEvent(c, action, resource, key, success, nil, details)
-		}
-	}()
-	userID := c.GetString("user_id")
-	key := c.Param("key")
-	configID := c.Query("config_id")
-
-	var config *S3Config
-	var err error
-
-	if configID != "" {
-		config, err = s.getConfigByID(userID, configID)
-	} else {
-		config, err = s.getDefaultConfig(userID)
-	}
-
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Configuration not found"})
-		return
-	}
-
-	client := s.createS3Client(*config)
-	if client == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create storage client"})
-		return
-	}
-
-	// Use user-specific prefix for file deletion
-	userPrefix := fmt.Sprintf("users/%s/", userID)
-	fullKey := userPrefix + key
-
-	_, err = client.DeleteObject(&s3.DeleteObjectInput{
-		Bucket: aws.String(config.BucketName),
-		Key:    aws.String(fullKey),
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete file: " + err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "File deleted successfully"})
-}
 
 func (s *S3Service) AutoConfigureMinIO(c *gin.Context) {
 	userID := c.GetString("user_id")

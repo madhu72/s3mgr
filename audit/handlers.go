@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"fmt"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,9 +17,55 @@ type AuditFilterRequest struct {
 	StartTime string `json:"start_time,omitempty"` // RFC3339 format
 	EndTime   string `json:"end_time,omitempty"`   // RFC3339 format
 	Limit     int    `json:"limit,omitempty"`
+	Page      int    `json:"page,omitempty"`
 }
 
 // GetAuditLogsHandler handles GET /api/admin/audit-logs
+
+// ExportAuditLogsHandler handles GET /api/admin/audit-logs/export
+func (a *AuditService) ExportAuditLogsHandler(c *gin.Context) {
+	_, exists := c.Get("username")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	format := c.DefaultQuery("format", "csv")
+	logs, err := a.GetAuditLogs("", "", "", time.Time{}, time.Time{}, 0, 0)
+	if err != nil {
+		a.LogEvent(c, "export_audit_logs", "audit_logs", "", false, err, map[string]interface{}{"format": format})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit logs"})
+		return
+	}
+	if format == "json" {
+		a.LogEvent(c, "export_audit_logs", "audit_logs", "", true, nil, map[string]interface{}{"format": format, "count": len(logs)})
+		c.Header("Content-Disposition", "attachment; filename=audit_logs.json")
+		c.JSON(http.StatusOK, logs)
+		return
+	}
+	// Default: CSV
+	a.LogEvent(c, "export_audit_logs", "audit_logs", "", true, nil, map[string]interface{}{"format": format, "count": len(logs)})
+	c.Header("Content-Disposition", "attachment; filename=audit_logs.csv")
+	c.Header("Content-Type", "text/csv")
+	w := c.Writer
+	w.Write([]byte("id,timestamp,user_id,username,action,resource,resource_id,client_ip,user_agent,success,error,session_id\n"))
+	for _, log := range logs {
+		w.Write([]byte(fmt.Sprintf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%t,%s,%s\n",
+			log.ID,
+			log.Timestamp.Format(time.RFC3339Nano),
+			log.UserID,
+			log.Username,
+			log.Action,
+			log.Resource,
+			log.ResourceID,
+			log.ClientIP,
+			log.UserAgent,
+			log.Success,
+			log.Error,
+			log.SessionID,
+		)))
+	}
+}
+
 func (a *AuditService) GetAuditLogsHandler(c *gin.Context) {
 	// Check if current user is admin
 	currentUser, exists := c.Get("username")
@@ -39,6 +86,10 @@ func (a *AuditService) GetAuditLogsHandler(c *gin.Context) {
 	startTimeStr := c.Query("start_time")
 	endTimeStr := c.Query("end_time")
 	limitStr := c.Query("limit")
+	if ps := c.Query("page_size"); ps != "" {
+		limitStr = ps // page_size overrides limit if present
+	}
+	pageStr := c.Query("page")
 
 	var startTime, endTime time.Time
 	var err error
@@ -59,12 +110,19 @@ func (a *AuditService) GetAuditLogsHandler(c *gin.Context) {
 		}
 	}
 
-	limit := 100 // Default limit
+	limit := 10 // Default limit
 	if limitStr != "" {
 		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
 			limit = parsedLimit
 		}
 	}
+	page := 1 // Default page
+	if pageStr != "" {
+		if parsedPage, err := strconv.Atoi(pageStr); err == nil && parsedPage > 0 {
+			page = parsedPage
+		}
+	}
+	offset := (page - 1) * limit
 
 	// Log the audit query action
 	a.LogEvent(c, "query_audit_logs", "audit_logs", "", true, nil, map[string]interface{}{
@@ -75,10 +133,20 @@ func (a *AuditService) GetAuditLogsHandler(c *gin.Context) {
 			"start_time": startTimeStr,
 			"end_time":   endTimeStr,
 			"limit":      limit,
+			"page":       page,
 		},
 	})
 
-	logs, err := a.GetAuditLogs(userID, action, resource, startTime, endTime, limit)
+	// Get total count for pagination
+	allLogs, err := a.GetAuditLogs(userID, action, resource, startTime, endTime, 0, 0)
+	if err != nil {
+		a.LogEvent(c, "query_audit_logs", "audit_logs", "", false, err, nil)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit logs"})
+		return
+	}
+	total := len(allLogs)
+
+	logs, err := a.GetAuditLogs(userID, action, resource, startTime, endTime, offset, limit)
 	if err != nil {
 		a.LogEvent(c, "query_audit_logs", "audit_logs", "", false, err, nil)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit logs"})
@@ -87,6 +155,7 @@ func (a *AuditService) GetAuditLogsHandler(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"audit_logs": logs,
+		"total":      total,
 		"count":      len(logs),
 		"filters": map[string]interface{}{
 			"user_id":    userID,
@@ -95,6 +164,7 @@ func (a *AuditService) GetAuditLogsHandler(c *gin.Context) {
 			"start_time": startTimeStr,
 			"end_time":   endTimeStr,
 			"limit":      limit,
+			"page":       page,
 		},
 	})
 }
@@ -178,7 +248,11 @@ func (a *AuditService) PostAuditLogsFilterHandler(c *gin.Context) {
 		"filters": filterRequest,
 	})
 
-	logs, err := a.GetAuditLogs(filterRequest.UserID, filterRequest.Action, filterRequest.Resource, startTime, endTime, filterRequest.Limit)
+	offset := 0
+	if filterRequest.Limit > 0 && filterRequest.Page > 1 {
+		offset = (filterRequest.Page - 1) * filterRequest.Limit
+	}
+	logs, err := a.GetAuditLogs(filterRequest.UserID, filterRequest.Action, filterRequest.Resource, startTime, endTime, offset, filterRequest.Limit)
 	if err != nil {
 		a.LogEvent(c, "filter_audit_logs", "audit_logs", "", false, err, nil)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit logs"})

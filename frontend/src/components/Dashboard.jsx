@@ -16,6 +16,10 @@ function Dashboard() {
   const [configs, setConfigs] = useState([])
   const [selectedConfigId, setSelectedConfigId] = useState(null)
   const [configsLoading, setConfigsLoading] = useState(true)
+  // Pagination state for files
+  const [filesPage, setFilesPage] = useState(1)
+  const [filesPageSize, setFilesPageSize] = useState(10)
+  const [filesTotal, setFilesTotal] = useState(0)
 
   useEffect(() => {
     loadConfigs()
@@ -25,7 +29,7 @@ function Dashboard() {
     if (selectedConfigId) {
       loadFiles()
     }
-  }, [selectedConfigId])
+  }, [selectedConfigId, filesPage, filesPageSize])
 
   const loadConfigs = async () => {
     try {
@@ -58,18 +62,20 @@ function Dashboard() {
     console.log('loadFiles: Loading files for configId:', selectedConfigId)
     setLoading(true)
     try {
-      const response = await s3API.getFiles(selectedConfigId)
+      // Pass pagination params to API
+      const response = await s3API.getFiles(selectedConfigId, { page: filesPage, page_size: filesPageSize })
       console.log('loadFiles: API response:', response)
       console.log('loadFiles: Response data:', response.data)
       
-      // Backend returns files under 'files' key
+      // Backend returns files under 'files' key and total count
       const fileList = Array.isArray(response.data.files) ? response.data.files : []
-      console.log('loadFiles: Processed fileList:', fileList)
       setFiles(fileList)
+      setFilesTotal(response.data.total || 0)
     } catch (error) {
       console.error('loadFiles: Failed to load files:', error)
       console.error('loadFiles: Error response:', error.response)
       setFiles([])
+      setFilesTotal(0)
     } finally {
       setLoading(false)
     }
@@ -228,6 +234,11 @@ function Dashboard() {
                       onFileDeleted={handleFileDeleted}
                       onRefresh={loadFiles}
                       configId={selectedConfigId}
+                      page={filesPage}
+                      setPage={setFilesPage}
+                      pageSize={filesPageSize}
+                      setPageSize={setFilesPageSize}
+                      total={filesTotal}
                     />
                   ) : Array.isArray(configs) && configs.length > 0 ? (
                     <div className="text-center py-12">

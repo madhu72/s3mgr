@@ -1,0 +1,3 @@
+id,user_id,name,access_key,secret_key,region,bucket_name,endpoint_url,use_ssl,storage_type,is_default,created_at,updated_at
+1,admin2,TestConfig1,AKIA1,SECRET1,us-east-1,bucket1,http://localhost:9000,true,aws,true,2024-01-01T12:00:00Z,2024-01-01T12:00:00Z
+2,admin2,TestConfig2,AKIA2,SECRET2,us-west-2,bucket2,http://localhost:9000,false,aws,false,2024-01-02T12:00:00Z,2024-01-02T12:00:00Z

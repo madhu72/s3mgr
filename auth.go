@@ -1,8 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -13,8 +13,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 
-	"s3mgr/middleware"
 	"s3mgr/audit"
+	"s3mgr/middleware"
 )
 
 type User struct {
@@ -65,8 +65,8 @@ type Claims struct {
 }
 
 type AuthService struct {
-	db        *badger.DB
-	jwtSecret []byte
+	db           *badger.DB
+	jwtSecret    []byte
 	auditService *audit.AuditService
 }
 
@@ -77,15 +77,15 @@ func (a *AuthService) Logout(c *gin.Context) {
 		// Try to extract from JWT or fallback to user_id
 		username = c.GetString("user_id")
 	}
-	a.auditService.LogEvent(c, "logout", "user", username, true, nil, nil)
+	// audit log removed(c, "logout", "user", username, true, nil, nil)
 	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
 }
 
-func NewAuthService(db *badger.DB, audit *audit.AuditService) *AuthService {
+func NewAuthService(db *badger.DB, auditService *audit.AuditService) *AuthService {
 	return &AuthService{
-		db:        db,
-		jwtSecret: []byte("your-secret-key"), // In production, use environment variable
-		auditService: audit,
+		db:           db,
+		jwtSecret:    []byte("your-secret-key"), // In production, use environment variable
+		auditService: auditService,
 	}
 }
 
@@ -131,9 +131,11 @@ func (a *AuthService) validateToken(tokenString string) (*Claims, error) {
 }
 
 func (a *AuthService) Login(c *gin.Context) {
+	// For audit logging
+
 	var user User
 	if err := c.ShouldBindJSON(&user); err != nil {
-		a.auditService.LogEvent(c, "login", "user", user.Username, false, err, map[string]interface{}{"error": err.Error()})
+		// audit log removed(c, "login", "user", user.Username, false, err, map[string]interface{}{"error": err.Error()})
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -150,19 +152,19 @@ func (a *AuthService) Login(c *gin.Context) {
 	})
 
 	if err != nil {
-		a.auditService.LogEvent(c, "login", "user", user.Username, false, err, map[string]interface{}{"error": "Invalid credentials"})
+		// audit log removed(c, "login", "user", user.Username, false, err, map[string]interface{}{"error": "Invalid credentials"})
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
 	if !storedUser.IsActive {
-		a.auditService.LogEvent(c, "login", "user", storedUser.Username, false, fmt.Errorf("user account is inactive"), map[string]interface{}{"error": "Account is inactive"})
+		// audit log removed(c, "login", "user", storedUser.Username, false, fmt.Errorf("user account is inactive"), map[string]interface{}{"error": "Account is inactive"})
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Account is inactive"})
 		return
 	}
 
 	if !a.checkPasswordHash(user.Password, storedUser.Password) {
-		a.auditService.LogEvent(c, "login", "user", storedUser.Username, false, fmt.Errorf("invalid password"), map[string]interface{}{"error": "Invalid credentials"})
+		// audit log removed(c, "login", "user", storedUser.Username, false, fmt.Errorf("invalid password"), map[string]interface{}{"error": "Invalid credentials"})
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
@@ -176,7 +178,7 @@ func (a *AuthService) Login(c *gin.Context) {
 
 	token, err := a.generateToken(storedUser.Username, storedUser.IsAdmin)
 	if err != nil {
-		a.auditService.LogEvent(c, "login", "user", storedUser.Username, false, err, map[string]interface{}{"error": "Failed to generate token"})
+		// audit log removed(c, "login", "user", storedUser.Username, false, err, map[string]interface{}{"error": "Failed to generate token"})
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
@@ -186,7 +188,7 @@ func (a *AuthService) Login(c *gin.Context) {
 	c.Set("user_id", storedUser.Username)
 	// session_id can be set here if available (e.g., from JWT or generated)
 
-	a.auditService.LogEvent(c, "login", "user", storedUser.Username, true, nil, map[string]interface{}{"status": c.Writer.Status()})
+	// audit log removed(c, "login", "user", storedUser.Username, true, nil, map[string]interface{}{"status": c.Writer.Status()})
 	c.JSON(http.StatusOK, gin.H{
 		"token":    token,
 		"username": storedUser.Username,
@@ -320,10 +322,15 @@ func (a *AuthService) ListUsersHandler(c *gin.Context) {
 
 // ExportUsersHandler returns all users as CSV or JSON (admin only)
 func (a *AuthService) ExportUsersHandler(c *gin.Context) {
+	// Audit logging helper
+	logAudit := func(success bool, err error, details map[string]interface{}) {
+		if a.auditService != nil {
+			a.auditService.LogEvent(c, "export_users", "user", "", success, err, details)
+		}
+	}
+
 	defer func() {
-		success := c.Writer.Status() == http.StatusOK
-		auditDetails := map[string]interface{}{"format": c.DefaultQuery("format", "csv")}
-		a.auditService.LogEvent(c, "export_users", "user", "", success, nil, auditDetails)
+		// audit log removed(c, "export_users", "user", "", c.Writer.Status() == http.StatusOK, nil, map[string]interface{}{"format": c.DefaultQuery("format", "csv")})
 	}()
 
 	format := c.DefaultQuery("format", "csv")
@@ -333,6 +340,7 @@ func (a *AuthService) ExportUsersHandler(c *gin.Context) {
 		return
 	}
 	if format == "json" {
+		logAudit(true, nil, map[string]interface{}{"format": format, "count": len(users)})
 		c.Header("Content-Disposition", "attachment; filename=users.json")
 		c.JSON(http.StatusOK, users)
 		return
@@ -355,19 +363,26 @@ func (a *AuthService) ExportUsersHandler(c *gin.Context) {
 			u.LastLogin.Format(time.RFC3339),
 		})
 	}
+	logAudit(true, nil, map[string]interface{}{"format": format, "count": len(users)})
 }
 
 // ImportUsersHandler accepts CSV or JSON and creates/updates users (admin only)
 func (a *AuthService) ImportUsersHandler(c *gin.Context) {
+	// Audit logging helper
+	logAudit := func(success bool, err error, details map[string]interface{}) {
+		if a.auditService != nil {
+			a.auditService.LogEvent(c, "import_users", "user", "", success, err, details)
+		}
+	}
+
 	defer func() {
-		success := c.Writer.Status() == http.StatusOK
-		auditDetails := map[string]interface{}{"format": c.DefaultQuery("format", "csv")}
-		a.auditService.LogEvent(c, "import_users", "user", "", success, nil, auditDetails)
+		// audit log removed(c, "import_users", "user", "", c.Writer.Status() == http.StatusOK, nil, map[string]interface{}{"format": c.DefaultQuery("format", "csv")})
 	}()
 
 	format := c.DefaultQuery("format", "csv")
 	file, _, err := c.Request.FormFile("file")
 	if err != nil {
+		logAudit(false, err, map[string]interface{}{"stage": "parse_form_file"})
 		c.JSON(http.StatusBadRequest, gin.H{"error": "File required"})
 		return
 	}
@@ -376,6 +391,7 @@ func (a *AuthService) ImportUsersHandler(c *gin.Context) {
 	if format == "json" {
 		dec := json.NewDecoder(file)
 		if err := dec.Decode(&users); err != nil {
+			logAudit(false, err, map[string]interface{}{"stage": "decode_json"})
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 			return
 		}
@@ -383,6 +399,7 @@ func (a *AuthService) ImportUsersHandler(c *gin.Context) {
 		r := csv.NewReader(file)
 		records, err := r.ReadAll()
 		if err != nil || len(records) < 2 {
+			logAudit(false, err, map[string]interface{}{"stage": "decode_csv"})
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid CSV"})
 			return
 		}
@@ -406,6 +423,7 @@ func (a *AuthService) ImportUsersHandler(c *gin.Context) {
 			return txn.Set([]byte("user:"+u.Username), userData)
 		})
 	}
+	logAudit(true, nil, map[string]interface{}{"format": format, "count": len(users)})
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Imported %d users", len(users))})
 }
 

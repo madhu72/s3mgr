@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { s3API } from '../services/api'
 import { Download, Trash2, RefreshCw, File, Folder } from 'lucide-react'
 
-function FileList({ files, loading, onFileDeleted, onRefresh, configId }) {
+function FileList({ files, loading, onFileDeleted, onRefresh, configId, page, setPage, pageSize, setPageSize, total }) {
   const [deleting, setDeleting] = useState(new Set())
 
   // Ensure files is always an array
@@ -97,7 +97,21 @@ function FileList({ files, loading, onFileDeleted, onRefresh, configId }) {
           </button>
         </div>
       </div>
-
+      {/* Pagination and page size controls */}
+      <div className="flex items-center justify-between mb-2 px-6 pt-4">
+        <div className="flex items-center space-x-2">
+          <label className="text-sm text-gray-700">Page size:</label>
+          <select
+            value={pageSize}
+            onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
+            className="px-2 py-1 border rounded"
+          >
+            {[10, 20, 50, 100].map(size => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+        </div>
+      </div>
       {fileList.length === 0 ? (
         <div className="text-center py-12">
           <Folder className="mx-auto h-12 w-12 text-gray-400" />
@@ -111,18 +125,10 @@ function FileList({ files, loading, onFileDeleted, onRefresh, configId }) {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Name
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Size
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Modified
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Size</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Modified</th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -143,12 +149,8 @@ function FileList({ files, loading, onFileDeleted, onRefresh, configId }) {
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {formatFileSize(file.size)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {formatDate(file.last_modified)}
-                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatFileSize(file.size)}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{formatDate(file.last_modified)}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <div className="flex items-center justify-end space-x-2">
                       <button
@@ -176,6 +178,20 @@ function FileList({ files, loading, onFileDeleted, onRefresh, configId }) {
               ))}
             </tbody>
           </table>
+          {/* Pagination Controls */}
+          <div className="flex justify-between items-center mt-4">
+            <button
+              className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+            >Prev</button>
+            <span className="mx-2">Page {page} of {Math.max(1, Math.ceil(total / pageSize))}</span>
+            <button
+              className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+              onClick={() => setPage(p => Math.min(Math.ceil(total / pageSize), p + 1))}
+              disabled={page >= Math.ceil(total / pageSize)}
+            >Next</button>
+          </div>
         </div>
       )}
     </div>

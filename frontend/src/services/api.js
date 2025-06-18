@@ -38,8 +38,8 @@ export const s3API = {
     });
   },
   // File operations (with optional config_id)
-  getFiles: (configId = null) => {
-    const params = configId ? { config_id: configId } : {}
+  getFiles: (configId = null, options = {}) => {
+    const params = { ...(configId ? { config_id: configId } : {}), ...options }
     return api.get('/files', { params })
   },
   uploadFile: (formData, configId = null) => {

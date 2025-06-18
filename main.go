@@ -9,12 +9,14 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"s3mgr/audit"
 	"s3mgr/config"
 	"s3mgr/logger"
 	"s3mgr/middleware"
+	"s3mgr/audit"
 )
 
+// main.go
+// ...
 func main() {
 	// Command line flags
 	createAdmin := flag.Bool("create-admin", false, "Create admin user interactively")
@@ -51,9 +53,9 @@ func main() {
 	defer db.Close()
 
 	// Initialize services
-	auditService = audit.NewAuditService(db)
+	auditService := audit.NewAuditService(db)
 	authService := NewAuthService(db, auditService)
-	s3Service := NewS3Service(db)
+	s3Service := NewS3Service(db, auditService)
 
 	// Set Gin mode based on log level
 	if cfg.Logging.Level == "debug" {
@@ -163,6 +165,7 @@ func main() {
 
 		// Audit log routes
 		admin.GET("/audit-logs", auditService.GetAuditLogsHandler)
+		admin.GET("/audit-logs/export", auditService.ExportAuditLogsHandler)
 		admin.POST("/audit-logs/filter", auditService.PostAuditLogsFilterHandler)
 		admin.GET("/audit-logs/incident/:session_id", auditService.GetAuditLogsByIncidentHandler)
 	}

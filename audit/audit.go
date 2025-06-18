@@ -3,6 +3,7 @@ package audit
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -52,8 +53,8 @@ func (a *AuditService) LogEvent(c *gin.Context, action, resource, resourceID str
 	auditLog := AuditLog{
 		ID:         fmt.Sprintf("audit_%d", time.Now().UnixNano()),
 		Timestamp:  time.Now(),
-		UserID:     getStringValue(userID),
-		Username:   getStringValue(username),
+		UserID:     GetStringValue(userID),
+		Username:   GetStringValue(username),
 		Action:     action,
 		Resource:   resource,
 		ResourceID: resourceID,
@@ -62,7 +63,7 @@ func (a *AuditService) LogEvent(c *gin.Context, action, resource, resourceID str
 		Success:    success,
 		Error:      errorMsg,
 		Details:    details,
-		SessionID:  getStringValue(sessionID),
+		SessionID:  GetStringValue(sessionID),
 	}
 
 	// Store in database
@@ -74,7 +75,7 @@ func (a *AuditService) LogEvent(c *gin.Context, action, resource, resourceID str
 }
 
 // GetAuditLogs retrieves audit logs with filtering
-func (a *AuditService) GetAuditLogs(userID, action, resource string, startTime, endTime time.Time, limit int) ([]AuditLog, error) {
+func (a *AuditService) GetAuditLogs(userID, action, resource string, startTime, endTime time.Time, offset, limit int) ([]AuditLog, error) {
 	var logs []AuditLog
 
 	err := a.db.View(func(txn *badger.Txn) error {
@@ -85,7 +86,8 @@ func (a *AuditService) GetAuditLogs(userID, action, resource string, startTime, 
 
 		prefix := []byte("audit:")
 		count := 0
-		for it.Seek(prefix); it.ValidForPrefix(prefix) && (limit == 0 || count < limit); it.Next() {
+		skipped := 0
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 			item := it.Item()
 			err := item.Value(func(val []byte) error {
 				var log AuditLog
@@ -110,6 +112,15 @@ func (a *AuditService) GetAuditLogs(userID, action, resource string, startTime, 
 					return nil
 				}
 
+				if skipped < offset {
+					skipped++
+					return nil
+				}
+
+				if limit > 0 && count >= limit {
+					return nil
+				}
+
 				logs = append(logs, log)
 				count++
 				return nil
@@ -117,10 +128,17 @@ func (a *AuditService) GetAuditLogs(userID, action, resource string, startTime, 
 			if err != nil {
 				return err
 			}
+			if limit > 0 && count >= limit {
+				break
+			}
 		}
 		return nil
 	})
 
+	// Sort logs by Timestamp descending
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].Timestamp.After(logs[j].Timestamp)
+	})
 	return logs, err
 }
 
@@ -159,7 +177,7 @@ func (a *AuditService) GetAuditLogsByIncident(sessionID string) ([]AuditLog, err
 }
 
 // Helper function to safely convert interface{} to string
-func getStringValue(value interface{}) string {
+func GetStringValue(value interface{}) string {
 	if value == nil {
 		return ""
 	}

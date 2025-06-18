@@ -7,6 +7,9 @@ import { useAuth } from '../context/AuthContext'
 
 function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated }) {
   const [configs, setConfigs] = useState([])
+const [page, setPage] = useState(1)
+const [pageSize, setPageSize] = useState(10)
+const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [editingConfig, setEditingConfig] = useState(null)
@@ -19,7 +22,8 @@ function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated })
 
   useEffect(() => {
     loadConfigs()
-  }, [])
+    // eslint-disable-next-line
+  }, [page, pageSize])
 
   // Bulk Export Configs
   const handleExportConfigs = async (format = 'csv') => {
@@ -60,14 +64,14 @@ function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated })
   const loadConfigs = async () => {
     setLoading(true)
     try {
-      const response = await s3API.getConfigs()
-      // Backend returns {configurations: [...]} not direct array
+      const response = await s3API.getConfigs({ page, page_size: pageSize })
       const configList = Array.isArray(response.data.configurations) ? response.data.configurations : []
       setConfigs(configList)
+      setTotal(response.data.total || 0)
       setError('')
     } catch (error) {
       console.error('Failed to load configs:', error)
-      setConfigs([]) // Ensure configs is always an array
+      setConfigs([])
       setError('Failed to load configurations')
     } finally {
       setLoading(false)
@@ -212,44 +216,27 @@ function ConfigManager({ onConfigSelected, selectedConfigId, onConfigsUpdated })
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-medium text-gray-900">Storage Configurations</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-semibold text-gray-800">Storage Configurations</h2>
+        <div className="flex items-center space-x-2">
+          <label className="text-sm text-gray-700">Page size:</label>
+          <select
+            value={pageSize}
+            onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
+            className="px-2 py-1 border rounded"
+          >
+            {[10, 20, 50, 100].map(size => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+        </div>
         <button
           onClick={handleCreateConfig}
-          className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
         >
           <Plus className="h-4 w-4 mr-2" />
           Add Configuration
         </button>
-
-        {/* Bulk Import/Export Buttons (Admins only) */}
-        {isAdmin() && (
-          <div className="flex items-center space-x-2">
-            <button
-              onClick={() => handleExportConfigs('csv')}
-              className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
-              title="Export configs as CSV"
-            >Export CSV</button>
-            <button
-              onClick={() => handleExportConfigs('json')}
-              className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700"
-              title="Export configs as JSON"
-            >Export JSON</button>
-            <label className="bg-blue-100 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-200 cursor-pointer ml-2">
-              Import
-              <input
-                type="file"
-                accept=".csv,.json"
-                style={{ display: 'none' }}
-                onChange={handleImportConfigs}
-              />
-            </label>
-            <select value={importExportFormat} onChange={e => setImportExportFormat(e.target.value)} className="ml-2 border rounded px-2 py-1">
-              <option value="csv">CSV</option>
-              <option value="json">JSON</option>
-            </select>
-          </div>
-        )}
       </div>
 
       {error && (
