@@ -93,9 +93,9 @@ function Login() {
                     onClick={() => setShowPassword((v) => !v)}
                   >
                     {showPassword ? (
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-5.523 0-10-4.477-10-10a9.956 9.956 0 013.053-7.071m16.97 0A9.956 9.956 0 0122 9c0 5.523-4.477 10-10 10-.343 0-.682-.018-1.018-.053M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" strokeWidth="2" stroke="currentColor" fill="none"/><circle cx="12" cy="12" r="3" strokeWidth="2" stroke="currentColor" fill="none"/></svg>
                     ) : (
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l18 18m-1.41-1.41A9.956 9.956 0 0022 9c0-5.523-4.477-10-10-10A9.956 9.956 0 003.053 4.929m16.97 0A9.956 9.956 0 0122 9c0 5.523-4.477 10-10 10-.343 0-.682-.018-1.018-.053M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M17.94 17.94C16.11 19.23 14.13 20 12 20c-7 0-11-8-11-8a21.82 21.82 0 0 1 5.06-6.06M22.54 6.42A21.82 21.82 0 0 1 23 12s-4 8-11 8c-2.13 0-4.11-.77-5.94-2.06M1 1l22 22" strokeWidth="2" stroke="currentColor" fill="none"/><circle cx="12" cy="12" r="3" strokeWidth="2" stroke="currentColor" fill="none"/></svg>
                     )}
                   </button>
                 </div>
